@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>숫자 인식 신경망 (0-9)</title>
+    <!-- TensorFlow.js -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Noto Sans KR', sans-serif;
+            background-color: #111827; /* Dark theme background */
+            color: white;
+            touch-action: none;
+        }
+        canvas.drawing-board {
+            border: 2px solid #374151;
+            border-radius: 12px;
+            cursor: crosshair;
+            background-color: black;
+            box-shadow: 0 0 15px rgba(99, 102, 241, 0.2);
+        }
+        canvas.network-viz {
+            /* border: 1px dashed #4b5563; */
+            border-radius: 8px;
+        }
+        .glass-panel {
+            background: rgba(31, 41, 55, 0.7);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(75, 85, 99, 0.4);
+        }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col items-center justify-center p-4 overflow-hidden">
+
+    <!-- Header -->
+    <header class="mb-4 text-center">
+        <h1 class="text-2xl md:text-3xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 to-pink-400 mb-2">
+            🧠 신경망 내부 시각화 (0~9)
+        </h1>
+        <p class="text-gray-400 text-sm">왼쪽에 0부터 9 사이의 숫자를 그려보세요.</p>
+    </header>
+
+    <!-- Main Container -->
+    <div class="flex flex-col lg:flex-row gap-6 w-full max-w-6xl items-center justify-center">
+        
+        <!-- 1. Input Section: Drawing Canvas -->
+        <div class="flex flex-col items-center gap-4">
+            <div class="glass-panel p-4 rounded-2xl shadow-2xl relative">
+                <h3 class="text-xs font-bold text-gray-400 mb-2 uppercase text-center tracking-widest">Input Layer (28x28)</h3>
+                <div class="relative">
+                    <canvas id="canvas" class="drawing-board" width="224" height="224"></canvas>
+                    
+                    <!-- Loading Overlay -->
+                    <div id="loading-overlay" class="absolute inset-0 bg-black bg-opacity-90 flex items-center justify-center rounded-xl z-20">
+                        <div class="text-white text-center">
+                            <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-500 mx-auto mb-2"></div>
+                            <p class="text-xs text-gray-400">AI 모델 로딩 중...</p>
+                        </div>
+                    </div>
+                </div>
+                
+                <button onclick="clearCanvas()" class="mt-4 w-full py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg font-medium transition-colors text-sm flex items-center justify-center gap-2">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                        <path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clip-rule="evenodd" />
+                    </svg>
+                    지우기
+                </button>
+            </div>
+        </div>
+
+        <!-- 2. Visualization Section: Neural Network Diagram -->
+        <div class="flex-1 flex flex-col items-center justify-center min-w-[300px]">
+            <div class="relative w-full flex justify-center">
+                <!-- Lines and Nodes will be drawn here -->
+                <canvas id="network-canvas" class="network-viz" width="400" height="400"></canvas>
+            </div>
+            <div class="flex justify-between w-full max-w-[400px] text-xs text-gray-500 px-8 mt-2">
+                <span>입력층</span>
+                <span>은닉층</span>
+                <span>출력층</span>
+            </div>
+        </div>
+
+        <!-- 3. Output Section: Results -->
+        <div class="flex flex-col gap-4 w-full lg:w-64">
+            <div class="glass-panel p-6 rounded-2xl border-t-4 border-indigo-500">
+                <h2 class="text-xs font-bold text-gray-400 mb-4 uppercase tracking-widest text-center">Final Prediction</h2>
+                <div class="flex flex-col items-center">
+                    <span class="text-7xl font-black text-white drop-shadow-[0_0_15px_rgba(99,102,241,0.5)]" id="prediction-result">-</span>
+                    <p class="text-sm text-indigo-300 mt-2 font-bold" id="prediction-confidence">대기 중...</p>
+                </div>
+            </div>
+
+            <!-- Mini Bars for 0-9 -->
+            <div class="glass-panel p-4 rounded-xl max-h-[300px] overflow-y-auto custom-scrollbar">
+                <div class="space-y-2" id="bars-container">
+                    <!-- Bars generated by JS -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <footer class="fixed bottom-4 text-xs text-gray-600">
+        All digits 0-9 are active
+    </footer>
+
+    <script>
+        // --- Configuration ---
+        const TARGET_CLASSES = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]; // Full range
+        
+        // --- Globals ---
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const netCanvas = document.getElementById('network-canvas');
+        const netCtx = netCanvas.getContext('2d');
+        
+        const loadingOverlay = document.getElementById('loading-overlay');
+        const resultDisplay = document.getElementById('prediction-result');
+        const confidenceDisplay = document.getElementById('prediction-confidence');
+        const barsContainer = document.getElementById('bars-container');
+
+        let model;
+        let isDrawing = false;
+        let lastX = 0;
+        let lastY = 0;
+
+        // Neural Net Viz Data
+        // Visualization layer sizes: Input(10), Hidden(12), Output(10)
+        const VIZ_LAYERS = [10, 12, 10]; 
+        let nodeActivations = [[], [], []]; 
+
+        // --- Init Bars (0-9) ---
+        function initBars() {
+            barsContainer.innerHTML = '';
+            TARGET_CLASSES.forEach(i => {
+                const row = document.createElement('div');
+                row.className = "flex items-center gap-3 text-xs";
+                row.innerHTML = `
+                    <span class="w-3 text-center font-bold text-gray-400">${i}</span>
+                    <div class="flex-1 h-2 bg-gray-700 rounded-full overflow-hidden">
+                        <div id="bar-${i}" class="h-full bg-gradient-to-r from-indigo-500 to-purple-500 w-0 transition-all duration-300"></div>
+                    </div>
+                    <span id="prob-${i}" class="w-8 text-right text-gray-500">0%</span>
+                `;
+                barsContainer.appendChild(row);
+            });
+        }
+        initBars();
+
+        // --- Canvas Logic (Drawing) ---
+        ctx.fillStyle = "black";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.strokeStyle = "white";
+        ctx.lineWidth = 15;
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
+
+        function getPos(e) {
+            const rect = canvas.getBoundingClientRect();
+            const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+            const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+            return { x: clientX - rect.left, y: clientY - rect.top };
+        }
+
+        function startDrawing(e) {
+            isDrawing = true;
+            const pos = getPos(e);
+            lastX = pos.x;
+            lastY = pos.y;
+            if (e.type === 'touchstart') e.preventDefault();
+        }
+
+        function draw(e) {
+            if (!isDrawing) return;
+            if (e.type === 'touchmove') e.preventDefault();
+            const pos = getPos(e);
+            ctx.beginPath();
+            ctx.moveTo(lastX, lastY);
+            ctx.lineTo(pos.x, pos.y);
+            ctx.stroke();
+            lastX = pos.x;
+            lastY = pos.y;
+            
+            requestAnimationFrame(predictAndVisualize);
+        }
+
+        function stopDrawing() { isDrawing = false; }
+
+        canvas.addEventListener('mousedown', startDrawing);
+        canvas.addEventListener('mousemove', draw);
+        canvas.addEventListener('mouseup', stopDrawing);
+        canvas.addEventListener('mouseout', stopDrawing);
+        canvas.addEventListener('touchstart', startDrawing, { passive: false });
+        canvas.addEventListener('touchmove', draw, { passive: false });
+        canvas.addEventListener('touchend', stopDrawing);
+
+        function clearCanvas() {
+            ctx.fillStyle = "black";
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            resultDisplay.innerText = "-";
+            confidenceDisplay.innerText = "대기 중...";
+            TARGET_CLASSES.forEach(i => {
+                document.getElementById(`bar-${i}`).style.width = '0%';
+                document.getElementById(`prob-${i}`).innerText = '0%';
+            });
+            // Reset Viz
+            nodeActivations = [
+                new Array(VIZ_LAYERS[0]).fill(0), 
+                new Array(VIZ_LAYERS[1]).fill(0), 
+                new Array(VIZ_LAYERS[2]).fill(0)
+            ];
+            drawNetwork();
+        }
+
+        // --- Neural Network Visualization Logic ---
+        function initNetworkViz() {
+            nodeActivations = [
+                new Array(VIZ_LAYERS[0]).fill(0),
+                new Array(VIZ_LAYERS[1]).fill(0),
+                new Array(VIZ_LAYERS[2]).fill(0)
+            ];
+            drawNetwork();
+        }
+
+        function drawNetwork() {
+            const width = netCanvas.width;
+            const height = netCanvas.height;
+            netCtx.clearRect(0, 0, width, height);
+
+            const layerX = [40, width / 2, width - 40]; 
+            const nodeRadius = 6; // Slightly smaller for dense 10-node output
+
+            // Helper to get node position
+            const getNodePos = (layerIdx, nodeIdx) => {
+                const count = VIZ_LAYERS[layerIdx];
+                // Distribute vertically centered
+                const totalH = height * 0.8;
+                const startY = (height - totalH) / 2;
+                const spacing = totalH / (count - 1);
+                return { x: layerX[layerIdx], y: startY + (spacing * nodeIdx) };
+            };
+
+            // 1. Draw Connections (Weights)
+            for (let l = 0; l < 2; l++) {
+                for (let i = 0; i < VIZ_LAYERS[l]; i++) {
+                    for (let j = 0; j < VIZ_LAYERS[l+1]; j++) {
+                        const start = getNodePos(l, i);
+                        const end = getNodePos(l+1, j);
+                        
+                        const activation = nodeActivations[l][i];
+                        const destActivation = nodeActivations[l+1][j];
+                        
+                        let opacity = 0.05; 
+                        let lineWidth = 0.5;
+                        
+                        if (activation > 0.1) {
+                            opacity = 0.1 + (activation * 0.4); 
+                            if (destActivation > 0.1) opacity += 0.2; 
+                            lineWidth = 0.5 + activation * 1.5;
+                        }
+
+                        netCtx.beginPath();
+                        netCtx.moveTo(start.x, start.y);
+                        netCtx.lineTo(end.x, end.y);
+                        netCtx.strokeStyle = `rgba(99, 102, 241, ${opacity})`;
+                        netCtx.lineWidth = lineWidth;
+                        netCtx.stroke();
+                    }
+                }
+            }
+
+            // 2. Draw Nodes
+            for (let l = 0; l < 3; l++) {
+                for (let i = 0; i < VIZ_LAYERS[l]; i++) {
+                    const pos = getNodePos(l, i);
+                    const val = nodeActivations[l][i];
+                    
+                    netCtx.beginPath();
+                    netCtx.arc(pos.x, pos.y, nodeRadius + (val * 2), 0, Math.PI * 2);
+                    
+                    const r = 31 + (224 * val);
+                    const g = 41 + (20 * val);
+                    const b = 55 + (200 * val);
+                    
+                    netCtx.fillStyle = `rgb(${r}, ${g}, ${b})`;
+                    netCtx.shadowBlur = val * 10;
+                    netCtx.shadowColor = "rgba(99, 102, 241, 0.8)";
+                    netCtx.fill();
+                    
+                    netCtx.strokeStyle = val > 0.5 ? "white" : "#4b5563";
+                    netCtx.lineWidth = 1.5;
+                    netCtx.shadowBlur = 0;
+                    netCtx.stroke();
+
+                    // Labels for Output Layer (0-9)
+                    if (l === 2) {
+                        netCtx.fillStyle = "white";
+                        netCtx.font = "10px sans-serif";
+                        netCtx.textAlign = "left";
+                        netCtx.textBaseline = "middle";
+                        netCtx.fillText(TARGET_CLASSES[i], pos.x + 12, pos.y);
+                    }
+                }
+            }
+        }
+
+        // --- TFJS Logic ---
+        async function loadModel() {
+            try {
+                model = await tf.loadLayersModel('https://storage.googleapis.com/tfjs-models/tfjs/mnist_transfer_cnn_v1/model.json');
+                loadingOverlay.classList.add('hidden');
+                
+                // Warmup
+                const dummy = tf.zeros([1, 28, 28, 1]);
+                model.predict(dummy).dispose();
+                dummy.dispose();
+                
+                initNetworkViz();
+                
+            } catch (error) {
+                console.error("Load failed", error);
+            }
+        }
+
+        async function predictAndVisualize() {
+            if (!model) return;
+
+            tf.tidy(() => {
+                // 1. Preprocess
+                let tensor = tf.browser.fromPixels(canvas, 1);
+                const resized = tf.image.resizeBilinear(tensor, [28, 28]);
+                const normalized = resized.div(tf.scalar(255.0));
+                
+                // 2. Compute Input Layer Activations for Viz
+                const inputData = normalized.dataSync(); 
+                const chunkSize = Math.floor(784 / VIZ_LAYERS[0]);
+                for (let i = 0; i < VIZ_LAYERS[0]; i++) {
+                    let sum = 0;
+                    for (let j = 0; j < chunkSize; j++) {
+                        sum += inputData[i * chunkSize + j];
+                    }
+                    nodeActivations[0][i] = Math.min(1, sum / 5); 
+                }
+
+                // 3. Predict (Full 0-9)
+                const batched = normalized.expandDims(0);
+                const prediction = model.predict(batched);
+                const allValues = prediction.dataSync(); // 10 values
+
+                // 4. Use all values directly
+                const maxVal = Math.max(...allValues);
+                const maxIndex = allValues.indexOf(maxVal);
+
+                // 5. Update UI
+                resultDisplay.innerText = maxIndex;
+                confidenceDisplay.innerText = `확신: ${Math.round(maxVal * 100)}%`;
+
+                // Update Bars
+                TARGET_CLASSES.forEach((label, idx) => {
+                    const prob = allValues[idx];
+                    const percentage = Math.round(prob * 100);
+                    document.getElementById(`bar-${label}`).style.width = `${percentage}%`;
+                    document.getElementById(`prob-${label}`).innerText = `${percentage}%`;
+                    
+                    // Highlight logic
+                    const bar = document.getElementById(`bar-${label}`);
+                    if (idx === maxIndex) {
+                        bar.classList.remove('from-indigo-500', 'to-purple-500');
+                        bar.classList.add('from-pink-500', 'to-rose-500');
+                    } else {
+                        bar.classList.add('from-indigo-500', 'to-purple-500');
+                        bar.classList.remove('from-pink-500', 'to-rose-500');
+                    }
+                });
+
+                // 6. Update Viz Layers
+                nodeActivations[2] = Array.from(allValues); // Output layer = probabilities
+
+                // Hidden layer simulation
+                for (let i = 0; i < VIZ_LAYERS[1]; i++) {
+                    const seed = (maxIndex + 1) * (i + 1);
+                    const noise = Math.sin(seed) * 0.5 + 0.5;
+                    const inputIntensity = nodeActivations[0].reduce((a,b)=>a+b,0) / VIZ_LAYERS[0];
+                    nodeActivations[1][i] = (noise * 0.6 + inputIntensity * 0.4) * (maxVal > 0.3 ? 1 : 0.3);
+                }
+
+                drawNetwork();
+            });
+        }
+
+        loadModel();
+
+    </script>
+</body>
+</html>
